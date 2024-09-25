@@ -1,0 +1,236 @@
+from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+from typing import List
+
+import numpy as np
+import pandas as pd
+from pandas.tseries import offsets
+from pandas.tseries.frequencies import to_offset
+
+from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+import torch
+
+
+class TimeFeature:
+    def __init__(self):
+        pass
+
+    def __call__(self, index: pd.DatetimeIndex) -> np.ndarray:
+        pass
+
+    def __repr__(self):
+        return self.__class__.__name__ + "()"
+
+
+class SecondOfMinute(TimeFeature):
+    """Minute of hour encoded as value between [-0.5, 0.5]"""
+
+    def __call__(self, index: pd.DatetimeIndex) -> np.ndarray:
+        return index.second / 59.0 - 0.5
+
+
+class MinuteOfHour(TimeFeature):
+    """Minute of hour encoded as value between [-0.5, 0.5]"""
+
+    def __call__(self, index: pd.DatetimeIndex) -> np.ndarray:
+        return index.minute / 59.0 - 0.5
+
+
+class HourOfDay(TimeFeature):
+    """Hour of day encoded as value between [-0.5, 0.5]"""
+
+    def __call__(self, index: pd.DatetimeIndex) -> np.ndarray:
+        return index.hour / 23.0 - 0.5
+
+
+class DayOfWeek(TimeFeature):
+    """Hour of day encoded as value between [-0.5, 0.5]"""
+
+    def __call__(self, index: pd.DatetimeIndex) -> np.ndarray:
+        return index.dayofweek / 6.0 - 0.5
+
+
+class DayOfMonth(TimeFeature):
+    """Day of month encoded as value between [-0.5, 0.5]"""
+
+    def __call__(self, index: pd.DatetimeIndex) -> np.ndarray:
+        return (index.day - 1) / 30.0 - 0.5
+
+
+class DayOfYear(TimeFeature):
+    """Day of year encoded as value between [-0.5, 0.5]"""
+
+    def __call__(self, index: pd.DatetimeIndex) -> np.ndarray:
+        return (index.dayofyear - 1) / 365.0 - 0.5
+
+
+class MonthOfYear(TimeFeature):
+    """Month of year encoded as value between [-0.5, 0.5]"""
+
+    def __call__(self, index: pd.DatetimeIndex) -> np.ndarray:
+        return (index.month - 1) / 11.0 - 0.5
+
+
+class WeekOfYear(TimeFeature):
+    """Week of year encoded as value between [-0.5, 0.5]"""
+
+    def __call__(self, index: pd.DatetimeIndex) -> np.ndarray:
+        return (index.week - 1) / 52.0 - 0.5
+
+
+def time_features_from_frequency_str(freq_str: str) -> List[TimeFeature]:
+    """
+    Returns a list of time features that will be appropriate for the given frequency string.
+    Parameters
+    ----------
+    freq_str
+        Frequency string of the form [multiple][granularity] such as "12H", "5min", "1D" etc.
+    """
+
+    features_by_offsets = {
+        offsets.YearEnd: [],
+        offsets.QuarterEnd: [MonthOfYear],
+        offsets.MonthEnd: [MonthOfYear],
+        offsets.Week: [DayOfMonth, WeekOfYear],
+        offsets.Day: [DayOfWeek, DayOfMonth, DayOfYear],
+        offsets.BusinessDay: [DayOfWeek, DayOfMonth, DayOfYear],
+        offsets.Hour: [HourOfDay, DayOfWeek, DayOfMonth, DayOfYear],
+        offsets.Minute: [
+            MinuteOfHour,
+            HourOfDay,
+            DayOfWeek,
+            DayOfMonth,
+            DayOfYear,
+        ],
+        offsets.Second: [
+            SecondOfMinute,
+            MinuteOfHour,
+            HourOfDay,
+            DayOfWeek,
+            DayOfMonth,
+            DayOfYear,
+        ],
+    }
+
+    offset = to_offset(freq_str)
+
+    for offset_type, feature_classes in features_by_offsets.items():
+        if isinstance(offset, offset_type):
+            return [cls() for cls in feature_classes]
+
+    supported_freq_msg = f"""
+    Unsupported frequency {freq_str}
+    The following frequencies are supported:
+        Y   - yearly
+            alias: A
+        M   - monthly
+        W   - weekly
+        D   - daily
+        B   - business days
+        H   - hourly
+        T   - minutely
+            alias: min
+        S   - secondly
+    """
+    raise RuntimeError(supported_freq_msg)
+
+
+def time_features(dates, timeenc=1, freq='h'):
+    """
+    > `time_features` takes in a `dates` dataframe with a 'dates' column and extracts the date down to `freq` where freq can be any of the following if `timeenc` is 0:
+    > * m - [month]
+    > * w - [month]
+    > * d - [month, day, weekday]
+    > * b - [month, day, weekday]
+    > * h - [month, day, weekday, hour]
+    > * t - [month, day, weekday, hour, *minute]
+    >
+    > If `timeenc` is 1, a similar, but different list of `freq` values are supported (all encoded between [-0.5 and 0.5]):
+    > * Q - [month]
+    > * M - [month]
+    > * W - [Day of month, week of year]
+    > * D - [Day of week, day of month, day of year]
+    > * B - [Day of week, day of month, day of year]
+    > * H - [Hour of day, day of week, day of month, day of year]
+    > * T - [Minute of hour*, hour of day, day of week, day of month, day of year]
+    > * S - [Second of minute, minute of hour, hour of day, day of week, day of month, day of year]
+
+    *minute returns a number from 0-3 corresponding to the 15 minute period it falls into.
+    """
+    if timeenc == 0:
+        dates['month'] = dates.date.apply(lambda row: row.month, 1)
+        dates['day'] = dates.date.apply(lambda row: row.day, 1)
+        dates['weekday'] = dates.date.apply(lambda row: row.weekday(), 1)
+        dates['hour'] = dates.date.apply(lambda row: row.hour, 1)
+        dates['minute'] = dates.date.apply(lambda row: row.minute, 1)
+        dates['minute'] = dates.minute.map(lambda x: x // 15)
+        freq_map = {
+            'y': [], 'm': ['month'], 'w': ['month'], 'd': ['month', 'day', 'weekday'],
+            'b': ['month', 'day', 'weekday'], 'h': ['month', 'day', 'weekday', 'hour'],
+            't': ['month', 'day', 'weekday', 'hour', 'minute'],
+        }
+        return dates[freq_map[freq.lower()]].values
+    if timeenc == 1:
+        dates = pd.to_datetime(dates.date.values)
+        return np.vstack([feat(dates) for feat in time_features_from_frequency_str(freq)]).transpose(1, 0)
+
+
+# 读取数据集文件并进行预处理
+path = r'../../dataHandle/Dataset.csv'
+df = pd.read_csv(path)
+# 将 Series 转换为 DataFrame，并重命名列为 'date'
+df_time = pd.DataFrame({'date': pd.to_datetime(df['数据时间'])})
+
+# 现在可以调用 time_features 函数，因为我们有了正确的 DataFrame
+features = time_features(df_time, timeenc=1, freq='t')
+
+# 1. 分离特征和标签
+X = df.iloc[:, 1:-1]  # 除去第一列时间和最后一列标签的其他特征
+y = df.iloc[:, -1]  # 最后一列是标签
+y = y.to_numpy()
+# 2. 标准化特征
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+
+# 4. 划分训练集和测试集
+X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.1)
+
+# 将 NumPy 数组转换为 PyTorch 张量
+X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
+y_train_tensor = torch.tensor(y_train, dtype=torch.float32)
+X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
+y_test_tensor = torch.tensor(y_test, dtype=torch.float32)
+data_stamp_tensor = torch.tensor(features, dtype=torch.float32)
+X_train_tensor = X_train_tensor.unsqueeze(1)  # 在第二个维度上添加一个维度
+X_test_tensor = X_test_tensor.unsqueeze(1)  # 在第二个维度上添加一个维度
+data_stamp_tensor = data_stamp_tensor.unsqueeze(1)
+
+
+# 5. 创建自定义的 Dataset 类
+class CustomDataset(Dataset):
+    def __init__(self, X, y, data_stamp):
+        self.X = X
+        self.y = y
+        self.data_stamp = data_stamp
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx], self.data_stamp[idx]
+
+
+# 创建训练集和测试集的 Dataset 对象
+train_dataset = CustomDataset(X_train_tensor, y_train_tensor, data_stamp_tensor)
+test_dataset = CustomDataset(X_test_tensor, y_test_tensor, data_stamp_tensor)
+
+# 6. 使用 DataLoader 封装数据
+batch_size = 16  # 选择一个适合你模型和硬件的批大小
+train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
+test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
+print(train_dataset[0][0].shape)
